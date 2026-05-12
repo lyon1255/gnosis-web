@@ -3,11 +3,11 @@ import { AlertTriangle, Box, CheckCircle2, ChevronDown, ChevronRight, CloudDownl
 import QuestEditorPage from './QuestEditorPage';
 import ItemEditorPage from './ItemEditorPage';
 import {
+  buildSyncPayload,
   createDefaultGameData,
-  hydrateGameData,
   loadCachedGameData,
   loadSyncSettings,
-  normalizeGameData,
+  parseGameDataSource,
   pullGameDataFromApi,
   pushGameDataToApi,
   saveCachedGameData,
@@ -35,6 +35,7 @@ function Placeholder({ label }) {
 
 function SyncPanel({ syncSettings, onSyncSettingsChange, gameData, syncState, onPull, onPush, onResetLocal, onImportLocal, onCopyLocal }) {
   const totalRecords = gameData.items.length + gameData.entities.length + gameData.quests.length + gameData.spells.length + gameData.auras.length;
+  const syncPayloadPreview = useMemo(() => buildSyncPayload(gameData), [gameData]);
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-6">
@@ -44,7 +45,7 @@ function SyncPanel({ syncSettings, onSyncSettingsChange, gameData, syncState, on
             <div>
               <p className="text-[10px] font-black uppercase tracking-[0.24em] text-[#2EF2C4]">Auth API Sync</p>
               <h3 className="text-2xl font-montserrat font-black text-white mt-2">PULL / PUSH Workspace</h3>
-              <p className="text-sm text-white/45 mt-3 max-w-2xl">All editor changes are persisted into a local browser cache JSON. PULL replaces the local workspace from the API. PUSH uploads the current local workspace back to the Auth API.</p>
+              <p className="text-sm text-white/45 mt-3 max-w-2xl">The browser workspace now mirrors the Unity sync DTO shape. Local cache, copy, and import use the assetId / classType / jsonData payload while the editor keeps a hydrated in-memory view.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button onClick={onPull} disabled={syncState.loading} className="px-4 py-3 rounded-xl bg-white/5 border border-white/5 text-white text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2 disabled:opacity-50"><CloudDownload size={14} /> Pull</button>
@@ -97,14 +98,14 @@ function SyncPanel({ syncSettings, onSyncSettingsChange, gameData, syncState, on
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
             <div>
               <p className="text-[10px] font-black uppercase tracking-[0.24em] text-[#2EF2C4]">Local Cache JSON</p>
-              <h3 className="text-xl font-montserrat font-black text-white mt-2">Workspace Snapshot</h3>
+              <h3 className="text-xl font-montserrat font-black text-white mt-2">Unity Sync Payload Preview</h3>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button onClick={onCopyLocal} className="px-4 py-3 rounded-xl bg-white/5 border border-white/5 text-white text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2"><Copy size={14} /> Copy JSON</button>
-              <button onClick={onImportLocal} className="px-4 py-3 rounded-xl bg-white/5 border border-white/5 text-white text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2"><Database size={14} /> Import JSON</button>
+              <button onClick={onCopyLocal} className="px-4 py-3 rounded-xl bg-white/5 border border-white/5 text-white text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2"><Copy size={14} /> Copy Sync JSON</button>
+              <button onClick={onImportLocal} className="px-4 py-3 rounded-xl bg-white/5 border border-white/5 text-white text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2"><Database size={14} /> Import Sync JSON</button>
             </div>
           </div>
-          <pre className="bg-[#0E1624] border border-white/10 rounded-2xl p-4 text-[11px] leading-6 text-white/70 overflow-auto max-h-[400px]">{JSON.stringify(gameData, null, 2)}</pre>
+          <pre className="bg-[#0E1624] border border-white/10 rounded-2xl p-4 text-[11px] leading-6 text-white/70 overflow-auto max-h-[400px]">{JSON.stringify(syncPayloadPreview, null, 2)}</pre>
         </div>
       </div>
 
@@ -122,12 +123,12 @@ function SyncPanel({ syncSettings, onSyncSettingsChange, gameData, syncState, on
         </div>
 
         <div className="bg-[#162031] rounded-2xl border border-white/5 p-5">
-          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-white/30">Recommended Flow</p>
+          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-white/30">Expected Payload Shape</p>
           <div className="mt-4 space-y-3 text-sm text-white/55">
-            <p>1. Pull the latest Auth API snapshot.</p>
-            <p>2. Edit Items or Quests locally.</p>
-            <p>3. Review the local JSON preview.</p>
-            <p>4. Push the local cache back to the API.</p>
+            <p>1. Top-level items, entities, quests, spells, and auras arrays.</p>
+            <p>2. Each entry should contain assetId, classType, and jsonData.</p>
+            <p>3. jsonData should contain the Unity MonoBehaviour wrapper string.</p>
+            <p>4. PUSH still wraps this payload into the replace request DTO expected by Auth API.</p>
           </div>
         </div>
       </aside>
@@ -137,7 +138,7 @@ function SyncPanel({ syncSettings, onSyncSettingsChange, gameData, syncState, on
 
 export default function GameDataWorkspace({ userRole }) {
   const [tab, setTab] = useState('quests');
-  const [gameData, setGameData] = useState(() => hydrateGameData(loadCachedGameData()));
+  const [gameData, setGameData] = useState(() => parseGameDataSource(loadCachedGameData()));
   const [syncSettings, setSyncSettings] = useState(() => loadSyncSettings());
   const [syncState, setSyncState] = useState({ loading: false, level: 'success', message: '' });
   const [syncPanelOpen, setSyncPanelOpen] = useState(true);
@@ -160,11 +161,11 @@ export default function GameDataWorkspace({ userRole }) {
   const handlePull = async () => {
     if (!canEditGameData) return;
     setSyncState({ loading: true, level: 'success', message: 'Pulling latest snapshot from the Auth API...' });
+
     try {
       const pulled = await pullGameDataFromApi(syncSettings);
-      const hydrated = hydrateGameData(normalizeGameData(pulled));
-      setGameData(hydrated);
-      setSyncState({ loading: false, level: 'success', message: 'Pull completed. Local cache has been replaced from the Auth API.' });
+      setGameData(parseGameDataSource(pulled));
+      setSyncState({ loading: false, level: 'success', message: 'Pull completed. Local cache now follows the Unity sync payload format.' });
     } catch (error) {
       setSyncState({ loading: false, level: 'error', message: error?.message || 'Pull failed.' });
     }
@@ -173,6 +174,7 @@ export default function GameDataWorkspace({ userRole }) {
   const handlePush = async () => {
     if (!canEditGameData) return;
     setSyncState({ loading: true, level: 'success', message: 'Uploading local cache to the Auth API...' });
+
     try {
       await pushGameDataToApi(gameData, syncSettings);
       setSyncState({ loading: false, level: 'success', message: 'Push completed. Auth API snapshot replaced successfully.' });
@@ -184,17 +186,17 @@ export default function GameDataWorkspace({ userRole }) {
   const handleResetLocal = () => {
     const confirmed = window.confirm('Reset the local workspace cache back to the built-in defaults?');
     if (!confirmed) return;
-    const next = hydrateGameData(createDefaultGameData());
-    setGameData(next);
+
+    setGameData(parseGameDataSource(createDefaultGameData()));
     setSyncState({ loading: false, level: 'success', message: 'Local cache reset to default bundled data.' });
   };
 
   const handleImportLocal = () => {
-    const pasted = window.prompt('Paste a valid local cache JSON payload. It should include items, entities, quests, spells, and auras.');
+    const pasted = window.prompt('Paste a valid sync JSON payload. It should include items, entities, quests, spells, and auras, and each record should use assetId, classType, and jsonData.');
     if (!pasted) return;
+
     try {
-      const parsed = hydrateGameData(normalizeGameData(JSON.parse(pasted)));
-      setGameData(parsed);
+      setGameData(parseGameDataSource(JSON.parse(pasted)));
       setSyncState({ loading: false, level: 'success', message: 'Local cache imported successfully.' });
     } catch {
       setSyncState({ loading: false, level: 'error', message: 'Import failed. The provided text was not valid JSON.' });
@@ -202,9 +204,9 @@ export default function GameDataWorkspace({ userRole }) {
   };
 
   const handleCopyLocal = async () => {
-    const payload = JSON.stringify(gameData, null, 2);
+    const payload = JSON.stringify(buildSyncPayload(gameData), null, 2);
     await navigator.clipboard.writeText(payload);
-    setSyncState({ loading: false, level: 'success', message: 'Local cache JSON copied to the clipboard.' });
+    setSyncState({ loading: false, level: 'success', message: 'Sync JSON copied to the clipboard.' });
   };
 
   if (!canEditGameData) {

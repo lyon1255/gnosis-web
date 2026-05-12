@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { signOut } from 'firebase/auth';
 import { auth, db } from '../firebase';
 import { doc, collection, onSnapshot, query, updateDoc, setDoc } from 'firebase/firestore';
@@ -6,8 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { AnimatedSection } from '../components/Shared';
 import AdminSidebar from '../components/admin/AdminSidebar';
 import AdminOverview from '../components/admin/AdminOverview';
-import GameDataPage from '../components/admin/GameDataPage';
-import { gameDataSchemas, mockGameData } from '../data/gameDataSchemas';
+import GameDataWorkspace from '../components/admin/GameDataWorkspace';
 import { CheckCircle } from 'lucide-react';
 
 function GlobalControl({ systemSettings, updateGlobalSettings }) {
@@ -87,23 +86,16 @@ function BugReports({ displayedBugs, bugFilter, setBugFilter, updateBugStatus })
 function Personnel({ usersList, updateUserRole }) {
   return (
     <div className="bg-[#162031] rounded-2xl border border-white/5 overflow-hidden">
-      <div className="p-8 border-b border-white/5">
-        <h3 className="text-xl font-montserrat font-black text-white uppercase">Personnel Database</h3>
-      </div>
+      <div className="p-8 border-b border-white/5"><h3 className="text-xl font-montserrat font-black text-white uppercase">Personnel Database</h3></div>
       <div className="overflow-x-auto">
         <table className="w-full text-left">
-          <thead className="bg-white/5 text-[10px] font-black text-white/30 uppercase tracking-widest">
-            <tr><th className="px-8 py-5">Profile</th><th className="px-8 py-5">Access Level</th><th className="px-8 py-5">Assign</th></tr>
-          </thead>
+          <thead className="bg-white/5 text-[10px] font-black text-white/30 uppercase tracking-widest"><tr><th className="px-8 py-5">Profile</th><th className="px-8 py-5">Access Level</th><th className="px-8 py-5">Assign</th></tr></thead>
           <tbody className="divide-y divide-white/5">
             {usersList.map((u) => (
               <tr key={u.uid} className="hover:bg-white/[0.02]">
-                <td className="px-8 py-6 flex items-center gap-4">
-                  <img src={u.photoURL} className="w-10 h-10 rounded-full border border-white/10" alt="" />
-                  <div><p className="text-white font-bold">{u.name}</p><p className="text-[10px] text-white/30 font-mono uppercase">{u.uid}</p></div>
-                </td>
-                <td className="px-8 py-6"><span className={`px-3 py-1 rounded text-[10px] font-black uppercase border ${u.role === 'owner' ? 'text-red-400 border-red-400/30' : 'text-white/40 border-white/10'}`}>{u.role || 'default'}</span></td>
-                <td className="px-8 py-6">{u.role !== 'owner' ? (<select value={u.role || 'default'} onChange={(e) => updateUserRole(u.uid, e.target.value)} className="bg-[#0E1624] border border-white/10 rounded-lg p-2 text-xs text-white outline-none"><option value="default">Default</option><option value="moderator">Moderator</option><option value="developer">Developer</option></select>) : <span className="text-[10px] font-black text-red-500 uppercase">Master</span>}</td>
+                <td className="px-8 py-6 flex items-center gap-4"><img src={u.photoURL} className="w-10 h-10 rounded-full border border-white/10" alt="" /><div><p className="text-white font-bold">{u.name}</p><p className="text-[10px] text-white/30 font-mono uppercase">{u.uid}</p></div></td>
+                <td className="px-8 py-6"><span className={`px-3 py-1 rounded text-[10px] font-black uppercase border ${u.role === 'owner' ? 'text-red-400 border-red-400/30' : 'text-white/40 border-white/10'}`}>{u.role || 'viewer'}</span></td>
+                <td className="px-8 py-6">{u.role !== 'owner' ? (<select value={u.role || 'viewer'} onChange={(e) => updateUserRole(u.uid, e.target.value)} className="bg-[#0E1624] border border-white/10 rounded-lg p-2 text-xs text-white outline-none"><option value="viewer">Viewer</option><option value="moderator">Moderator</option><option value="publisher">Publisher</option></select>) : <span className="text-[10px] font-black text-red-500 uppercase">Master</span>}</td>
               </tr>
             ))}
           </tbody>
@@ -120,19 +112,14 @@ export default function AdminDashboard({ stats, userRole }) {
   const [systemSettings, setSettings] = useState({ maintenance: false, announcement: '', serverStatus: 'online' });
   const [bugFilter, setBugFilter] = useState('new');
   const navigate = useNavigate();
+  const canEditGameData = ['owner', 'publisher'].includes(userRole);
 
   useEffect(() => {
     const unsubBugs = onSnapshot(query(collection(db, 'bugReports')), (snap) => {
       const reports = [];
       snap.forEach((entry) => reports.push({ id: entry.id, ...entry.data() }));
-      const filtered = reports.filter((bug) => {
-        if (userRole === 'owner') return true;
-        if (userRole === 'developer') return ['In-Game', 'Website', 'Other'].includes(bug.category);
-        if (userRole === 'moderator') return bug.category === 'Discord';
-        return false;
-      });
-      setBugReports(filtered.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
-    }, (error) => console.error('Bug loading error:', error));
+      setBugReports(reports.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
+    }, () => {});
 
     const unsubSettings = onSnapshot(doc(db, 'settings', 'global'), (entry) => {
       if (entry.exists()) setSettings(entry.data());
@@ -154,29 +141,28 @@ export default function AdminDashboard({ stats, userRole }) {
     };
   }, [userRole]);
 
+  useEffect(() => {
+    if (activeTab === 'gamedata' && !canEditGameData) setActiveTab('overview');
+  }, [activeTab, canEditGameData]);
+
   const handleLogout = async () => { await signOut(auth); navigate('/'); };
   const updateGlobalSettings = async (newData) => {
-    try {
-      const settingsRef = doc(db, 'settings', 'global');
-      await setDoc(settingsRef, { ...systemSettings, ...newData }, { merge: true });
-    } catch (e) { console.error('Settings update failed:', e); }
+    try { await setDoc(doc(db, 'settings', 'global'), { ...systemSettings, ...newData }, { merge: true }); } catch {}
   };
   const updateBugStatus = async (id, newStatus) => updateDoc(doc(db, 'bugReports', id), { status: newStatus });
   const updateUserRole = async (uid, newRole) => {
-    if (window.confirm(`Promote user to ${newRole.toUpperCase()}?`)) await updateDoc(doc(db, 'users', uid), { role: newRole });
+    if (window.confirm(`Assign ${newRole.toUpperCase()} role?`)) await updateDoc(doc(db, 'users', uid), { role: newRole });
   };
   const displayedBugs = bugReports.filter((bug) => bugFilter === 'all' ? true : bug.status === bugFilter);
 
-  const gameDataKeys = ['items', 'auras', 'entities', 'quests', 'spells', 'versions'];
-
   return (
     <main className="pt-32 lg:pt-40 pb-20 px-6 md:px-12 lg:px-20 min-h-screen bg-[#0E1624]">
-      <div className="max-w-[1600px] mx-auto flex flex-col lg:flex-row gap-8">
+      <div className="max-w-[1700px] mx-auto flex flex-col lg:flex-row gap-8">
         <AdminSidebar activeTab={activeTab} setActiveTab={setActiveTab} userRole={userRole} bugCount={bugReports.filter((b) => b.status === 'new').length} onLogout={handleLogout} />
         <div className="flex-grow min-w-0">
           <AnimatedSection className="space-y-6">
-            {activeTab === 'overview' && <AdminOverview stats={stats} systemSettings={systemSettings} setActiveTab={setActiveTab} />}
-            {gameDataKeys.includes(activeTab) && <GameDataPage sectionKey={activeTab} schema={gameDataSchemas[activeTab]} records={mockGameData[activeTab]} />}
+            {activeTab === 'overview' && <AdminOverview stats={stats} systemSettings={systemSettings} setActiveTab={setActiveTab} canEditGameData={canEditGameData} />}
+            {activeTab === 'gamedata' && canEditGameData && <GameDataWorkspace userRole={userRole} />}
             {activeTab === 'settings' && userRole === 'owner' && <GlobalControl systemSettings={systemSettings} updateGlobalSettings={updateGlobalSettings} />}
             {activeTab === 'bugs' && <BugReports displayedBugs={displayedBugs} bugFilter={bugFilter} setBugFilter={setBugFilter} updateBugStatus={updateBugStatus} />}
             {activeTab === 'users' && userRole === 'owner' && <Personnel usersList={usersList} updateUserRole={updateUserRole} />}

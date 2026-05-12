@@ -30,7 +30,7 @@ const ScrollToHash = () => {
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [userRole, setUserRole] = useState('default'); 
+  const [userRole, setUserRole] = useState('viewer'); 
   const [showBugModal, setShowBugModal] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [patchNotes, setPatchNotes] = useState([]);
@@ -61,12 +61,12 @@ export default function App() {
       setUser(currentUser);
       if (currentUser) {
         const userSnap = await getDoc(doc(db, 'users', currentUser.uid));
-        if (userSnap.exists()) setUserRole(userSnap.data().role || 'default');
+        if (userSnap.exists()) setUserRole((userSnap.data().role || 'viewer').toLowerCase());
         else {
-          await setDoc(doc(db, 'users', currentUser.uid), { uid: currentUser.uid, name: currentUser.displayName, photoURL: currentUser.photoURL, role: 'default', lastLogin: Date.now() });
-          setUserRole('default');
+          await setDoc(doc(db, 'users', currentUser.uid), { uid: currentUser.uid, name: currentUser.displayName, photoURL: currentUser.photoURL, role: 'viewer', lastLogin: Date.now() });
+          setUserRole('viewer');
         }
-      } else setUserRole('default');
+      } else setUserRole('viewer');
     });
     return () => unsub();
   }, []);
@@ -83,8 +83,8 @@ export default function App() {
     window.location.href = 'https://steamauth-dmwo7p5zfa-uc.a.run.app';
   };
 
-  const hasAdminAccess = ['owner', 'developer', 'moderator'].includes(userRole);
-  const isMaintenanceExempt = ['owner', 'developer'].includes(userRole);
+  const hasAdminAccess = ['owner', 'publisher', 'moderator'].includes(userRole);
+  const isMaintenanceExempt = ['owner', 'publisher'].includes(userRole);
 
   // KARBANTARTÁS KÉPERNYŐ
   if (systemSettings.maintenance && !isMaintenanceExempt) {
@@ -120,7 +120,7 @@ export default function App() {
 
         <Routes>
           <Route path="/" element={<Home latestNote={patchNotes[0]} isNewUpdate={patchNotes[0] ? (Date.now() - patchNotes[0].timestamp) < (7*24*60*60*1000) : false} />} />
-          <Route path="/patch-notes" element={<PatchNotes patchNotes={patchNotes} isAdmin={['owner', 'developer'].includes(userRole)} isNewUpdate={(ts) => (Date.now() - ts) < (7*24*60*60*1000)} />} />
+          <Route path="/patch-notes" element={<PatchNotes patchNotes={patchNotes} isAdmin={['owner', 'publisher'].includes(userRole)} isNewUpdate={(ts) => (Date.now() - ts) < (7*24*60*60*1000)} />} />
           <Route path="/privacy-policy" element={<PrivacyPolicy />} />
           <Route path="/terms-of-service" element={<TermsOfService />} />
           <Route path="/admin" element={hasAdminAccess ? <AdminDashboard stats={stats} userRole={userRole} /> : <div className="pt-40 text-center font-black text-4xl text-red-500 uppercase">Access Denied</div>} />

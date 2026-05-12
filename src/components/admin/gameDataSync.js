@@ -13,16 +13,26 @@ export const DEFAULT_SYNC_SETTINGS = {
   requestTimeoutSeconds: 60,
 };
 
+const SYNC_SECTIONS = ['items', 'entities', 'quests', 'spells', 'auras'];
+
 const structuredCloneSafe = (value) => JSON.parse(JSON.stringify(value));
 
-export function createDefaultGameData() {
-  return normalizeGameData(structuredCloneSafe({
+const createEmptySyncPayload = () => ({
+  items: [],
+  entities: [],
+  quests: [],
+  spells: [],
+  auras: [],
+});
+
+function getRawGameDataSource() {
+  return structuredCloneSafe({
     items: rawGameData.items || [],
     entities: rawGameData.entities || [],
     quests: rawGameData.quests || [],
     spells: rawGameData.spells || [],
     auras: rawGameData.auras || [],
-  }));
+  });
 }
 
 export function normalizeGameData(source) {
@@ -35,32 +45,19 @@ export function normalizeGameData(source) {
   };
 }
 
-export function loadCachedGameData() {
-  try {
-    const raw = window.localStorage.getItem(GAME_DATA_CACHE_KEY);
-    if (!raw) return createDefaultGameData();
-    return normalizeGameData(JSON.parse(raw));
-  } catch {
-    return createDefaultGameData();
-  }
-}
-
-export function saveCachedGameData(data) {
-  window.localStorage.setItem(GAME_DATA_CACHE_KEY, JSON.stringify(normalizeGameData(data)));
-}
-
-export function loadSyncSettings() {
-  try {
-    const raw = window.localStorage.getItem(GAME_DATA_SYNC_SETTINGS_KEY);
-    if (!raw) return { ...DEFAULT_SYNC_SETTINGS };
-    return { ...DEFAULT_SYNC_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    return { ...DEFAULT_SYNC_SETTINGS };
-  }
-}
-
-export function saveSyncSettings(settings) {
-  window.localStorage.setItem(GAME_DATA_SYNC_SETTINGS_KEY, JSON.stringify({ ...DEFAULT_SYNC_SETTINGS, ...settings }));
+export function createEmptyStatSheet() {
+  return {
+    BasicAttack: { x: 0, y: 0 },
+    AD: 0,
+    AP: 0,
+    AttackSpeed: 0,
+    CritChance: 0,
+    MaxHealth: 0,
+    Defense: 0,
+    MaxMana: 0,
+    AbilityHaste: 0,
+    MoveSpeed: 0,
+  };
 }
 
 export function createQuestTemplate() {
@@ -129,21 +126,6 @@ export function createItemTemplate() {
   };
 }
 
-export function createEmptyStatSheet() {
-  return {
-    BasicAttack: { x: 0, y: 0 },
-    AD: 0,
-    AP: 0,
-    AttackSpeed: 0,
-    CritChance: 0,
-    MaxHealth: 0,
-    Defense: 0,
-    MaxMana: 0,
-    AbilityHaste: 0,
-    MoveSpeed: 0,
-  };
-}
-
 export function inferItemClassType(item) {
   if (item.classType) return item.classType;
   switch (item.itemType) {
@@ -183,8 +165,38 @@ export function hydrateGameData(data) {
   };
 }
 
+function looksLikeSyncEntry(entry) {
+  return Boolean(entry) && typeof entry === 'object' && (
+    Object.prototype.hasOwnProperty.call(entry, 'assetId')
+    || Object.prototype.hasOwnProperty.call(entry, 'AssetId')
+    || Object.prototype.hasOwnProperty.call(entry, 'jsonData')
+    || Object.prototype.hasOwnProperty.call(entry, 'JsonData')
+  );
+}
+
+function looksLikeSyncSection(entries) {
+  return Array.isArray(entries) && entries.some((entry) => looksLikeSyncEntry(entry));
+}
+
+function looksLikeSyncSource(source) {
+  return looksLikeSyncSection(source?.items)
+    || looksLikeSyncSection(source?.entities)
+    || looksLikeSyncSection(source?.quests)
+    || looksLikeSyncSection(source?.spells)
+    || looksLikeSyncSection(source?.auras)
+    || Array.isArray(source?.Items)
+    || Array.isArray(source?.Entities)
+    || Array.isArray(source?.Quests)
+    || Array.isArray(source?.Spells)
+    || Array.isArray(source?.Auras);
+}
+
 function unwrapMonoBehaviour(jsonData) {
   if (!jsonData) return {};
+  if (typeof jsonData === 'object') {
+    return jsonData?.MonoBehaviour || jsonData;
+  }
+
   try {
     const parsed = JSON.parse(jsonData);
     return parsed?.MonoBehaviour || parsed || {};
@@ -193,12 +205,54 @@ function unwrapMonoBehaviour(jsonData) {
   }
 }
 
+function normalizeSyncEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+
+  const assetId = entry.assetId || entry.AssetId || entry.id || '';
+  const classType = entry.classType || entry.ClassType || entry.type || '';
+  const jsonSource = entry.jsonData ?? entry.JsonData ?? null;
+  const isEnabled = entry.isEnabled ?? entry.IsEnabled ?? true;
+
+  let jsonData = '';
+  if (typeof jsonSource === 'string') {
+    jsonData = jsonSource;
+  } else if (jsonSource && typeof jsonSource === 'object') {
+    jsonData = JSON.stringify(jsonSource);
+  }
+
+  return {
+    assetId,
+    classType,
+    jsonData,
+    isEnabled,
+  };
+}
+
+function normalizeSyncPayload(source) {
+  const normalized = createEmptySyncPayload();
+
+  for (const section of SYNC_SECTIONS) {
+    const pascalKey = section.charAt(0).toUpperCase() + section.slice(1);
+    const rawEntries = Array.isArray(source?.[pascalKey])
+      ? source[pascalKey]
+      : Array.isArray(source?.[section])
+        ? source[section]
+        : [];
+
+    normalized[section] = rawEntries
+      .map((entry) => normalizeSyncEntry(entry))
+      .filter(Boolean);
+  }
+
+  return normalized;
+}
+
 function normalizeEntryPayload(section, payload, entry) {
   if (section === 'items') {
     const next = { ...createItemTemplate(), ...payload };
-    next.id = next.id || entry.AssetId || entry.assetId || '';
-    next.displayName = next.displayName || next.name || entry.AssetId || entry.assetId || '';
-    next.classType = entry.ClassType || entry.classType || inferItemClassType(next);
+    next.id = next.id || entry.assetId || '';
+    next.displayName = next.displayName || next.name || entry.assetId || '';
+    next.classType = entry.classType || inferItemClassType(next);
     next.itemType = inferItemType(next);
     next.statModifiersFlat = { ...createEmptyStatSheet(), ...(payload?.statModifiersFlat || {}) };
     next.statModifiersPercent = { ...createEmptyStatSheet(), ...(payload?.statModifiersPercent || {}) };
@@ -206,32 +260,76 @@ function normalizeEntryPayload(section, payload, entry) {
   }
 
   if (section === 'quests') {
-    return { ...createQuestTemplate(), ...payload, id: payload.id || entry.AssetId || entry.assetId || '', classType: 'QuestDefinition' };
+    return {
+      ...createQuestTemplate(),
+      ...payload,
+      id: payload?.id || entry.assetId || '',
+      classType: entry.classType || payload?.classType || 'QuestDefinition',
+    };
   }
 
   return {
     ...(payload || {}),
-    id: payload?.id || entry.AssetId || entry.assetId || '',
-    displayName: payload?.displayName || entry.AssetId || entry.assetId || '',
-    classType: entry.ClassType || entry.classType || payload?.classType || '',
+    id: payload?.id || entry.assetId || '',
+    displayName: payload?.displayName || entry.assetId || '',
+    classType: entry.classType || payload?.classType || '',
   };
 }
 
 export function adaptSnapshotToGameData(snapshot) {
-  const convertSection = (entries, section) => {
-    if (!Array.isArray(entries)) return [];
-    return entries
-      .filter((entry) => entry?.IsEnabled !== false)
-      .map((entry) => normalizeEntryPayload(section, unwrapMonoBehaviour(entry.JsonData || entry.jsonData), entry));
-  };
+  const normalizedSync = normalizeSyncPayload(snapshot);
+
+  const convertSection = (entries, section) => entries
+    .filter((entry) => entry.isEnabled !== false)
+    .map((entry) => normalizeEntryPayload(section, unwrapMonoBehaviour(entry.jsonData), entry));
 
   return hydrateGameData({
-    items: convertSection(snapshot?.Items || snapshot?.items, 'items'),
-    entities: convertSection(snapshot?.Entities || snapshot?.entities, 'entities'),
-    quests: convertSection(snapshot?.Quests || snapshot?.quests, 'quests'),
-    spells: convertSection(snapshot?.Spells || snapshot?.spells, 'spells'),
-    auras: convertSection(snapshot?.Auras || snapshot?.auras, 'auras'),
+    items: convertSection(normalizedSync.items, 'items'),
+    entities: convertSection(normalizedSync.entities, 'entities'),
+    quests: convertSection(normalizedSync.quests, 'quests'),
+    spells: convertSection(normalizedSync.spells, 'spells'),
+    auras: convertSection(normalizedSync.auras, 'auras'),
   });
+}
+
+export function parseGameDataSource(source) {
+  if (looksLikeSyncSource(source)) {
+    return adaptSnapshotToGameData(source);
+  }
+
+  return hydrateGameData(normalizeGameData(source));
+}
+
+export function createDefaultGameData() {
+  return parseGameDataSource(getRawGameDataSource());
+}
+
+export function loadCachedGameData() {
+  try {
+    const raw = window.localStorage.getItem(GAME_DATA_CACHE_KEY);
+    if (!raw) return createDefaultGameData();
+    return parseGameDataSource(JSON.parse(raw));
+  } catch {
+    return createDefaultGameData();
+  }
+}
+
+export function saveCachedGameData(data) {
+  window.localStorage.setItem(GAME_DATA_CACHE_KEY, JSON.stringify(buildSyncPayload(data)));
+}
+
+export function loadSyncSettings() {
+  try {
+    const raw = window.localStorage.getItem(GAME_DATA_SYNC_SETTINGS_KEY);
+    if (!raw) return { ...DEFAULT_SYNC_SETTINGS };
+    return { ...DEFAULT_SYNC_SETTINGS, ...JSON.parse(raw) };
+  } catch {
+    return { ...DEFAULT_SYNC_SETTINGS };
+  }
+}
+
+export function saveSyncSettings(settings) {
+  window.localStorage.setItem(GAME_DATA_SYNC_SETTINGS_KEY, JSON.stringify({ ...DEFAULT_SYNC_SETTINGS, ...settings }));
 }
 
 function itemTypeNumber(item) {
@@ -313,8 +411,12 @@ function buildQuestMonoBehaviour(quest) {
     turnInNpcId: quest.turnInNpcId || '',
     expReward: Number(quest.expReward || 0),
     currencyReward: Number(quest.currencyReward || 0),
-    guaranteedItemRewards: Array.isArray(quest.guaranteedItemRewards) ? quest.guaranteedItemRewards.map((reward) => ({ itemId: reward.itemId || '', amount: Number(reward.amount || 1) })) : [],
-    choiceItemRewards: Array.isArray(quest.choiceItemRewards) ? quest.choiceItemRewards.map((reward) => ({ itemId: reward.itemId || '', amount: Number(reward.amount || 1) })) : [],
+    guaranteedItemRewards: Array.isArray(quest.guaranteedItemRewards)
+      ? quest.guaranteedItemRewards.map((reward) => ({ itemId: reward.itemId || '', amount: Number(reward.amount || 1) }))
+      : [],
+    choiceItemRewards: Array.isArray(quest.choiceItemRewards)
+      ? quest.choiceItemRewards.map((reward) => ({ itemId: reward.itemId || '', amount: Number(reward.amount || 1) }))
+      : [],
     nextQuestId: quest.nextQuestId || '',
   };
 }
@@ -327,8 +429,11 @@ function buildGenericMonoBehaviour(record, classType) {
   };
 }
 
-function toEntry(record, section) {
-  const classType = record.classType || inferItemClassType(record);
+function createSyncEntry(record, section) {
+  const classType = section === 'items'
+    ? inferItemClassType(record)
+    : (record.classType || (section === 'quests' ? 'QuestDefinition' : ''));
+
   const monoBehaviour = section === 'items'
     ? buildItemMonoBehaviour(record)
     : section === 'quests'
@@ -336,23 +441,45 @@ function toEntry(record, section) {
       : buildGenericMonoBehaviour(record, classType);
 
   return {
-    AssetId: record.id,
-    ClassType: section === 'items' ? inferItemClassType(record) : classType,
-    JsonData: JSON.stringify({ MonoBehaviour: monoBehaviour }),
+    assetId: record.id || record.assetId || '',
+    classType,
+    jsonData: JSON.stringify({ MonoBehaviour: monoBehaviour }),
+  };
+}
+
+export function buildSyncPayload(data) {
+  const normalized = hydrateGameData(normalizeGameData(data));
+
+  return {
+    items: normalized.items.map((item) => createSyncEntry(item, 'items')),
+    entities: normalized.entities.map((entity) => createSyncEntry(entity, 'entities')),
+    quests: normalized.quests.map((quest) => createSyncEntry(quest, 'quests')),
+    spells: normalized.spells.map((spell) => createSyncEntry(spell, 'spells')),
+    auras: normalized.auras.map((aura) => createSyncEntry(aura, 'auras')),
+  };
+}
+
+function buildReplaceEntry(record, section) {
+  const syncEntry = createSyncEntry(record, section);
+  return {
+    AssetId: syncEntry.assetId,
+    ClassType: syncEntry.classType,
+    JsonData: syncEntry.jsonData,
     IsEnabled: true,
   };
 }
 
 export function buildReplaceRequest(data) {
-  const normalized = hydrateGameData(data);
+  const normalized = hydrateGameData(normalizeGameData(data));
+
   return {
     VersionTag: `web-${new Date().toISOString().replace(/[:.]/g, '-')}`,
     Notes: 'Web GameDataWorkspace upload',
-    Items: normalized.items.map((item) => toEntry(item, 'items')),
-    Entities: normalized.entities.map((entity) => toEntry(entity, 'entities')),
-    Quests: normalized.quests.map((quest) => toEntry(quest, 'quests')),
-    Spells: normalized.spells.map((spell) => toEntry(spell, 'spells')),
-    Auras: normalized.auras.map((aura) => toEntry(aura, 'auras')),
+    Items: normalized.items.map((item) => buildReplaceEntry(item, 'items')),
+    Entities: normalized.entities.map((entity) => buildReplaceEntry(entity, 'entities')),
+    Quests: normalized.quests.map((quest) => buildReplaceEntry(quest, 'quests')),
+    Spells: normalized.spells.map((spell) => buildReplaceEntry(spell, 'spells')),
+    Auras: normalized.auras.map((aura) => buildReplaceEntry(aura, 'auras')),
   };
 }
 
@@ -418,9 +545,18 @@ async function applyAdminHeaders(method, pathWithOptionalQuery, bodyBytes, setti
 }
 
 async function fetchJson(url, options) {
-  const response = await fetch(url, options);
+  let response;
+
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    const message = error?.message || 'Failed to fetch.';
+    throw new Error(`Network request failed. Verify the endpoint, CORS policy, and admin headers. ${message}`);
+  }
+
   const text = await response.text();
   let parsed = null;
+
   try {
     parsed = text ? JSON.parse(text) : null;
   } catch {
@@ -442,7 +578,11 @@ export async function pullGameDataFromApi(settings) {
   const path = settings.downloadPath || DEFAULT_SYNC_SETTINGS.downloadPath;
   const url = joinUrl(settings.apiBaseUrl, path);
   const headers = await applyAdminHeaders('GET', path, new Uint8Array(), settings);
-  const snapshot = await fetchJson(url, { method: 'GET', headers, signal: AbortSignal.timeout?.(Math.max(1, Number(settings.requestTimeoutSeconds || 60)) * 1000) });
+  const snapshot = await fetchJson(url, {
+    method: 'GET',
+    headers,
+    signal: AbortSignal.timeout?.(Math.max(1, Number(settings.requestTimeoutSeconds || 60)) * 1000),
+  });
   return adaptSnapshotToGameData(snapshot);
 }
 
@@ -453,6 +593,7 @@ export async function pushGameDataToApi(data, settings) {
   const body = JSON.stringify(payload);
   const bodyBytes = new TextEncoder().encode(body);
   const headers = await applyAdminHeaders('POST', path, bodyBytes, settings);
+
   return fetchJson(url, {
     method: 'POST',
     headers,
